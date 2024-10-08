@@ -1,0 +1,130 @@
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+
+def analyze_data(files_info, output_html_path):
+    combined_year_data = pd.DataFrame()
+    combined_table_data = pd.DataFrame()
+
+    summaries = []
+
+    for file_info in files_info:
+        data = pd.read_csv(file_info['file_path'])
+
+#Convert date - this will help with table 
+        data['Date'] = pd.to_datetime(data['Date'])
+
+#Filter
+        filtered_data = data[(data[file_info['group_column']] == file_info['group_name']) & (data[file_info['type_column']] == file_info['item_type'])]
+
+#We can filter longer than a year, but it does crowd the graph! 3 year was the settled agreement 
+        one_year_ago = pd.Timestamp.now() - pd.DateOffset(years=3)
+        year_data = filtered_data[filtered_data['Date'] >= one_year_ago]
+        year_data = year_data.sort_values(by='Date')
+
+#Combining year data 
+        year_data['Source'] = file_info['title']
+        combined_year_data = pd.concat([combined_year_data, year_data], ignore_index=True)
+
+#For the table -- we need past two weeks data
+        latest_date = filtered_data['Date'].max()
+        two_weeks_ago = latest_date - pd.DateOffset(weeks=2)
+        two_week_data = filtered_data[filtered_data['Date'] >= two_weeks_ago].sort_values(by='Date')
+
+#Change vs the prior week
+        two_week_data['Previous_Week_Position'] = two_week_data['Position'].shift(1)
+        two_week_data['Change'] = two_week_data['Position'] - two_week_data['Previous_Week_Position']
+
+#Table --
+        two_week_data = two_week_data[['Date', 'Position', 'Previous_Week_Position', 'Change']].dropna()
+        two_week_data['Source'] = file_info['title']
+        combined_table_data = pd.concat([combined_table_data, two_week_data], ignore_index=True)
+
+#Stats
+        if not two_week_data.empty:
+            latest_position = two_week_data.iloc[-1]['Position']
+            previous_week_position = two_week_data.iloc[-2]['Position'] if len(two_week_data) > 1 else None
+            change = two_week_data.iloc[-1]['Change']
+            latest_date_str = two_week_data.iloc[-1]['Date'].strftime('%b %d, %Y')
+            summaries.append((file_info['title'], latest_date_str, latest_position, previous_week_position, change))
+
+#Dropdown options
+    dropdown_options = []
+    for title in combined_year_data['Source'].unique():
+        dropdown_options.append({'label': title, 'value': title})
+
+    fig = go.Figure()
+
+    for title in combined_year_data['Source'].unique():
+        data = combined_year_data[combined_year_data['Source'] == title]
+        fig.add_trace(go.Scatter(x=data['Date'], y=data['Position'], mode='lines', name=title, visible=True if title == dropdown_options[0]['value'] else False))
+
+#Summary 
+    annotations = []
+    for summary in summaries:
+        title, latest_date_str, latest_position, previous_week_position, change = summary
+        if latest_position is not None and previous_week_position is not None and change is not None:
+            annotations.append(dict(
+                xref='paper', yref='paper',
+                x=1.05, y=1,
+                xanchor='left', yanchor='bottom',
+                text=f"<b>{title}</b><br>Date: {latest_date_str}<br>Latest Position: {latest_position}<br>Previous Week Position: {previous_week_position}<br>Change: {change}",
+                showarrow=False,
+                font=dict(size=10)
+            ))
+
+    fig.update_layout(
+        title='Net Position of Managed Money in Various Markets (Past Year)',
+        xaxis_title='Date',
+        yaxis_title='Net Position',
+        updatemenus=[
+            {
+                'buttons': [
+                    {
+                        'args': [{'visible': [title == option['value'] for title in combined_year_data['Source'].unique()]}],
+                        'label': option['label'],
+                        'method': 'update'
+                    } for option in dropdown_options
+                ],
+                'direction': 'down',
+                'showactive': True,
+            }
+        ],
+        annotations=annotations
+    )
+
+#Bottom table with all data, helpful for summary.  
+    table_fig = go.Figure(data=[go.Table(
+        header=dict(values=['Source', 'Date', 'Position', 'Previous Week Position', 'Change'],
+                    fill_color='paleturquoise',
+                    align='left'),
+        cells=dict(values=[combined_table_data['Source'], combined_table_data['Date'].dt.strftime('%b %d, %Y'), combined_table_data['Position'], combined_table_data['Previous_Week_Position'], combined_table_data['Change']],
+                   fill_color='lavender',
+                   align='left'))
+    ])
+
+    table_fig.update_layout(title='Net Managed Money Position (Past Two Weeks)')
+
+    with open(output_html_path, 'w') as f:
+        f.write(fig.to_html(full_html=False, include_plotlyjs='cdn'))
+        f.write(table_fig.to_html(full_html=False, include_plotlyjs='cdn'))
+
+    fig.show()
+    table_fig.show()
+
+#IMPORTANT -- we can add more, but lets keep naming consistent
+files_info = [
+    {'file_path': r'J:\Strategy and Analytics Group\Balances\COT\CFTC_-_NYMEX_-_WTI.csv', 'group_name': 'Managed Money', 'item_type': 'Net', 'group_column': 'group_name', 'type_column': 'Type', 'title': 'NYMEX - WTI'},
+    {'file_path': r'J:\Strategy and Analytics Group\Balances\COT\CFTC_-_NYMEX_-_RBOB.csv', 'group_name': 'Managed Money', 'item_type': 'Net', 'group_column': 'group_name', 'type_column': 'Type', 'title': 'NYMEX - RBOB'},
+    {'file_path': r'J:\Strategy and Analytics Group\Balances\COT\CFTC_-_NYMEX_-_NO2.csv', 'group_name': 'Managed Money', 'item_type': 'Net', 'group_column': 'group_name', 'type_column': 'Type', 'title': 'NYMEX - No.2'},
+    {'file_path': r'J:\Strategy and Analytics Group\Balances\COT\CFTC_-_NYMEX!ICE_-_COMBINED.csv', 'group_name': 'Managed Money', 'item_type': 'Net', 'group_column': 'group_name', 'type_column': 'Type', 'title': 'NYMEX/ICE - WTI,Brent,RFG,RBOB,No.2,Gasoil'},
+    {'file_path': r'J:\Strategy and Analytics Group\Balances\COT\CFTC_-_NYMEX!ICE_-_WTI_BRENT.csv', 'group_name': 'Managed Money', 'item_type': 'Net', 'group_column': 'group_name', 'type_column': 'Type', 'title': 'NYMEX/ICE - WTI,Brent'},
+    {'file_path': r'J:\Strategy and Analytics Group\Balances\COT\CFTC_-_NYMEX!ICE_-_NO2_GASOIL.csv', 'group_name': 'Managed Money', 'item_type': 'Net', 'group_column': 'group_name', 'type_column': 'Type', 'title': 'NYMEX/ICE - NO2,Gasoil'},
+    {'file_path': r'J:\Strategy and Analytics Group\Balances\COT\CFTC_-_NYMEX_-_ALL.csv', 'group_name': 'Managed Money', 'item_type': 'Net', 'group_column': 'group_name', 'type_column': 'Type', 'title': 'NYMEX - WTI,RFG,RBOB,No.2'},
+    {'file_path': r'J:\Strategy and Analytics Group\Balances\COT\CFTC_-_Ags_-_Corn.csv', 'group_name': 'Managed Money', 'item_type': 'Net', 'group_column': 'Group', 'type_column': 'Value Type', 'title': 'Ags - Corn'}
+]
+
+#I went with COT Report but always open to better files name. 
+output_html_path = r'J:\Strategy and Analytics Group\Balances\COT\COT_Report.html'
+
+analyze_data(files_info, output_html_path)
